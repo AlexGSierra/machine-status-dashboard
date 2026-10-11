@@ -1,616 +1,182 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Machine Status Dashboard</title>
+<script>
+  const DATA_URL = "./data.json";
+  const REFRESH_MS = 60_000;
 
-  <style>
-    :root {
-      --black: #000000;
-      --background: #f1f3f5;
-      --white: #ffffff;
-      --navy: #1f293d;
-      --slate: #52627a;
-      --burgundy: #a20f3a;
-      --table-header: #960000;
-      --running: #16843d;
-      --stop: #d51f26;
-      --startup: #e47700;
-      --no-job: #65758f;
-      --disconnected: #a91f22;
-      --line: #d5dce5;
-      --pink-bg: #fff4f5;
-      --pink-text: #b01820;
-      --cream-bg: #fff7ed;
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, character => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;"
+    })[character]);
+  }
+
+  function machineCategory(state) {
+    const value = (state || "").trim();
+
+    if (value.toLowerCase() === "running") return "running";
+    if (value.toLowerCase() === "disconnected") return "disconnected";
+    if (value.toLowerCase() === "startup") return "startup";
+    if (!value) return "no-job";
+
+    const hasDate = /\d{1,4}[-/]\d{1,2}[-/]\d{1,4}/.test(value);
+    const hasTime = /\d{1,2}:\d{2}/.test(value);
+    if (hasDate && hasTime) return "stop";
+
+    return "other";
+  }
+
+  function currentShift() {
+    const hour = new Date().getHours();
+    return hour >= 7 && hour < 19 ? "Turno 1" : "Turno 2";
+  }
+
+  function updateDateAndShift() {
+    const now = new Date();
+    const formattedDate = new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric"
+    }).format(now);
+
+    document.getElementById("dateShift").textContent =
+      `Date: ${formattedDate} | Shift: ${currentShift()}`;
+  }
+
+  function renderTable(targetId, rows, columnCount, formatter) {
+    const body = document.getElementById(targetId);
+
+    if (!rows.length) {
+      body.innerHTML =
+        `<tr class="empty-row"><td colspan="${columnCount}">No records.</td></tr>`;
+      return;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    body.innerHTML = rows.map(formatter).join("");
+  }
 
-    body {
-      margin: 0;
-      background: var(--background);
-      color: var(--navy);
-      font-family: Arial, Helvetica, sans-serif;
-    }
+  function renderDashboard(data) {
+    const machines = Array.isArray(data.machines) ? data.machines : [];
+    const alerts = Array.isArray(data.alerts) ? data.alerts : [];
 
-    .fixed-top {
-      position: sticky;
-      top: 0;
-      z-index: 20;
-    }
-
-    .top-header {
-      min-height: 150px;
-      padding: 18px 30px;
-      background: var(--black);
-      color: var(--white);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 24px;
-    }
-
-    .header-copy h1 {
-      margin: 0 0 8px;
-      font-size: clamp(26px, 3vw, 40px);
-    }
-
-    .header-copy .subtitle {
-      margin: 0 0 6px;
-      font-size: clamp(17px, 2vw, 23px);
-    }
-
-    .header-copy .refresh-note {
-      margin: 0;
-      font-size: 14px;
-    }
-
-    .brand-area {
-      min-width: 190px;
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 8px;
-    }
-
-    .brand-area img {
-      display: block;
-      width: min(220px, 24vw);
-      max-height: 90px;
-      object-fit: contain;
-    }
-
-    .user-label {
-      color: var(--white);
-      font-size: 14px;
-      text-align: right;
-    }
-
-    .summary-strip {
-      min-height: 76px;
-      padding: 12px 22px;
-      background: var(--white);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      box-shadow: 0 2px 8px rgba(20, 30, 45, 0.08);
-    }
-
-    .date-shift {
-      color: var(--burgundy);
-      font-size: clamp(19px, 2.2vw, 29px);
-      font-weight: 700;
-    }
-
-    .last-updated {
-      color: var(--slate);
-      font-size: 14px;
-      text-align: right;
-    }
-
-    .preview-notice {
-      margin: 14px 20px 0;
-      padding: 10px 14px;
-      border-left: 5px solid var(--startup);
-      border-radius: 5px;
-      background: #fff7e6;
-      color: #60420b;
-      font-size: 14px;
-    }
-
-    main {
-      padding: 8px 20px 16px;
-    }
-
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(150px, 1fr));
-      gap: 16px;
-      margin: 8px 0 18px;
-    }
-
-    .kpi-card {
-      min-height: 165px;
-      padding: 16px 14px 10px;
-      border-top: 7px solid var(--accent);
-      border-radius: 10px;
-      background: var(--white);
-      box-shadow: 0 4px 12px rgba(25, 35, 50, 0.10);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .kpi-title {
-      color: var(--slate);
-      font-size: 18px;
-      font-weight: 700;
-      text-align: center;
-    }
-
-    .kpi-value {
-      color: var(--navy);
-      font-size: 58px;
-      font-weight: 700;
-      line-height: 1;
-      text-align: center;
-    }
-
-    .panel-row {
-      display: grid;
-      grid-template-columns: 3fr 2fr;
-      gap: 16px;
-      margin-bottom: 18px;
-      align-items: start;
-    }
-
-    .panel {
-      min-width: 0;
-      padding: 14px 16px 16px;
-      border: 1px solid #e0e3e7;
-      border-radius: 10px;
-      background: var(--white);
-      box-shadow: 0 3px 10px rgba(25, 35, 50, 0.08);
-    }
-
-    .panel-title {
-      margin: 0 0 12px;
-      color: var(--navy);
-      font-size: 23px;
-      font-weight: 700;
-    }
-
-    .panel-title.disconnected-title {
-      color: var(--disconnected);
-    }
-
-    .panel-title.startup-title {
-      color: var(--startup);
-    }
-
-    .panel-title.stop-title {
-      color: var(--stop);
-    }
-
-    .panel-title.alerts-title {
-      color: #8f3b16;
-    }
-
-    .table-wrap {
-      width: 100%;
-      overflow-x: auto;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background: var(--white);
-      font-size: 15px;
-    }
-
-    th {
-      height: 44px;
-      padding: 9px 8px;
-      background: var(--table-header);
-      color: var(--white);
-      font-size: 16px;
-      font-weight: 700;
-      text-align: center;
-      white-space: nowrap;
-    }
-
-    td {
-      min-height: 44px;
-      padding: 11px 8px;
-      border: 1px solid var(--line);
-      color: var(--navy);
-      text-align: center;
-      vertical-align: middle;
-    }
-
-    .disconnected-table tbody td {
-      background: var(--pink-bg);
-      color: var(--pink-text);
-    }
-
-    .alerts-table tbody td {
-      background: var(--cream-bg);
-      color: var(--navy);
-      text-align: left;
-    }
-
-    .empty-row td {
-      color: var(--slate);
-      background: var(--white);
-      text-align: center;
-      font-style: italic;
-    }
-
-    .alert-footer {
-      margin: 10px 0 0;
-      color: var(--slate);
-      font-size: 13px;
-    }
-
-    footer {
-      padding: 8px 20px 14px;
-      color: var(--slate);
-      font-size: 12px;
-    }
-
-    @media (max-width: 1000px) {
-      .kpi-grid {
-        grid-template-columns: repeat(3, minmax(150px, 1fr));
-      }
-
-      .panel-row {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    @media (max-width: 620px) {
-      .top-header {
-        min-height: auto;
-        padding: 16px;
-        align-items: flex-start;
-      }
-
-      .brand-area {
-        min-width: 110px;
-      }
-
-      .brand-area img {
-        width: 120px;
-      }
-
-      .user-label {
-        font-size: 12px;
-      }
-
-      .summary-strip {
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-      .last-updated {
-        text-align: left;
-      }
-
-      main {
-        padding-right: 12px;
-        padding-left: 12px;
-      }
-
-      .kpi-grid {
-        grid-template-columns: repeat(2, minmax(130px, 1fr));
-        gap: 10px;
-      }
-
-      .kpi-card {
-        min-height: 135px;
-      }
-
-      .kpi-title {
-        font-size: 15px;
-      }
-
-      .kpi-value {
-        font-size: 48px;
-      }
-
-      .panel {
-        padding: 12px 10px;
-      }
-
-      table {
-        min-width: 620px;
-        font-size: 13px;
-      }
-    }
-  </style>
-</head>
-
-<body>
-  <div class="fixed-top">
-    <header class="top-header">
-      <div class="header-copy">
-        <h1>Machine Status Dashboard</h1>
-        <p class="subtitle">Information analyzed from the eDart system</p>
-        <p class="refresh-note">EVA updates the information every 60 seconds.</p>
-      </div>
-
-      <div class="brand-area">
-        <img src="./Picture2.png" alt="ConMet logo">
-        <div class="user-label">Administrator | Alex Sierra</div>
-      </div>
-    </header>
-
-    <section class="summary-strip" aria-label="Date, shift and update time">
-      <div class="date-shift" id="dateShift">Date: -- | Shift: --</div>
-      <div class="last-updated" id="lastUpdated">Last Updated: Preview data</div>
-    </section>
-  </div>
-
-  <div class="preview-notice">
-    Preview only: the records below are illustrative. Live eDart data has not been connected to this web page yet.
-  </div>
-
-  <main>
-    <section class="kpi-grid" aria-label="Machine summary">
-      <article class="kpi-card" style="--accent: var(--running)">
-        <div class="kpi-title">Running Machines</div>
-        <div class="kpi-value" id="kpi-running">0</div>
-      </article>
-      <article class="kpi-card" style="--accent: var(--stop)">
-        <div class="kpi-title">Stop Machines</div>
-        <div class="kpi-value" id="kpi-stop">0</div>
-      </article>
-      <article class="kpi-card" style="--accent: var(--startup)">
-        <div class="kpi-title">Startup Machines</div>
-        <div class="kpi-value" id="kpi-startup">0</div>
-      </article>
-      <article class="kpi-card" style="--accent: var(--no-job)">
-        <div class="kpi-title">No Job Machines</div>
-        <div class="kpi-value" id="kpi-no-job">0</div>
-      </article>
-      <article class="kpi-card" style="--accent: var(--disconnected)">
-        <div class="kpi-title">Disconnected Machines</div>
-        <div class="kpi-value" id="kpi-disconnected">0</div>
-      </article>
-    </section>
-
-    <section class="panel" style="margin-bottom: 18px;">
-      <h2 class="panel-title stop-title">Stop Machines</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Machine</th>
-              <th>Mold Name</th>
-              <th>Machine State</th>
-              <th>Last Cycle</th>
-            </tr>
-          </thead>
-          <tbody id="stopRows"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel-row">
-      <article class="panel">
-        <h2 class="panel-title disconnected-title">Disconnected Machines</h2>
-        <div class="table-wrap">
-          <table class="disconnected-table">
-            <thead>
-              <tr>
-                <th>Machine</th>
-                <th>Mold Name</th>
-                <th>IP Address</th>
-                <th>Disconnected</th>
-                <th>Shift</th>
-                <th>Note</th>
-              </tr>
-            </thead>
-            <tbody id="disconnectedRows"></tbody>
-          </table>
-        </div>
-      </article>
-
-      <article class="panel">
-        <h2 class="panel-title startup-title">Startup Machines</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Machine</th>
-                <th>Mold Name</th>
-                <th>Status</th>
-                <th>Last Cycle</th>
-              </tr>
-            </thead>
-            <tbody id="startupRows"></tbody>
-          </table>
-        </div>
-      </article>
-    </section>
-
-    <section class="panel" style="margin-bottom: 18px;">
-      <h2 class="panel-title alerts-title">Communication / Configuration Alerts</h2>
-      <div class="table-wrap">
-        <table class="alerts-table">
-          <thead>
-            <tr>
-              <th>Alert Type</th>
-              <th>Value</th>
-              <th>Records</th>
-              <th>Description</th>
-            </tr>
-          </thead>
-          <tbody id="alertRows"></tbody>
-        </table>
-      </div>
-      <p class="alert-footer" id="alertFooter" hidden>
-        EVA: It is recommended that Alex Sierra be notified.
-      </p>
-    </section>
-  </main>
-
-  <footer>EVA | ConMet de México</footer>
-
-  <script>
-    // Datos ilustrativos únicamente para revisar la apariencia.
-    const demoData = {
-      machines: [
-        { name: "IMM 44", mold: "83782", state: "10/11/26 07:18:01", ip: "10.108.70.144", cycle: "26.81" },
-        { name: "IMM 15", mold: "-", state: "Disconnected", ip: "10.108.70.115", cycle: "-" },
-        { name: "IMM 50", mold: "42199-2", state: "Startup", ip: "10.108.70.150", cycle: "0.00" },
-        { name: "IMM 27", mold: "249782", state: "Startup", ip: "10.108.70.127", cycle: "0.00" },
-        { name: "IMM 10", mold: "-", state: "Disconnected", ip: "10.108.70.110", cycle: "-" },
-        { name: "IMM 01", mold: "Demo mold", state: "Running", ip: "10.108.70.101", cycle: "32.10" },
-        { name: "IMM 02", mold: "-", state: "", ip: "10.108.70.102", cycle: "-" }
-      ],
-      alerts: [
-        {
-          type: "DUPLICATE_MACHINE_NAME",
-          value: "IMM 10",
-          records: "2",
-          description: "Duplicate Machine Name detected: IMM 10 (2 records)."
-        },
-        {
-          type: "DUPLICATE_IP_ADDRESS",
-          value: "10.108.70.110",
-          records: "2",
-          description: "Duplicate IP Address detected: 10.108.70.110 (2 records)."
-        }
-      ]
+    const counts = {
+      running: 0,
+      stop: 0,
+      startup: 0,
+      "no-job": 0,
+      disconnected: 0
     };
 
-    function escapeHtml(value) {
-      return String(value ?? "").replace(/[&<>"']/g, character => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#039;"
-      })[character]);
-    }
+    const categories = {
+      stop: [],
+      startup: [],
+      disconnected: []
+    };
 
-    function machineCategory(state) {
-      const value = (state || "").trim();
-      if (value.toLowerCase() === "running") return "running";
-      if (value.toLowerCase() === "disconnected") return "disconnected";
-      if (value.toLowerCase() === "startup") return "startup";
-      if (!value) return "no-job";
-      if (/\d{1,4}[-/]\d{1,2}[-/]\d{1,4}.*\d{1,2}:\d{2}/.test(value)) return "stop";
-      return "other";
-    }
+    for (const machine of machines) {
+      const category = machineCategory(machine.state);
 
-    function addEmptyRow(targetId, columnCount, message) {
-      document.getElementById(targetId).innerHTML =
-        `<tr class="empty-row"><td colspan="${columnCount}">${escapeHtml(message)}</td></tr>`;
-    }
-
-    function renderTable(targetId, rows, columnCount, formatter) {
-      const body = document.getElementById(targetId);
-      if (!rows.length) {
-        addEmptyRow(targetId, columnCount, "No machines in this category.");
-        return;
-      }
-      body.innerHTML = rows.map(formatter).join("");
-    }
-
-    function renderDashboard(data) {
-      const counts = {
-        running: 0,
-        stop: 0,
-        startup: 0,
-        "no-job": 0,
-        disconnected: 0
-      };
-
-      const categories = {
-        stop: [],
-        startup: [],
-        disconnected: []
-      };
-
-      const now = new Date();
-      const hour = now.getHours();
-      const shift = hour >= 7 && hour < 19 ? "Turno 1" : "Turno 2";
-      const date = new Intl.DateTimeFormat("en-GB", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric"
-      }).format(now);
-
-      document.getElementById("dateShift").textContent =
-        `Date: ${date} | Shift: ${shift}`;
-
-      for (const machine of data.machines) {
-        const category = machineCategory(machine.state);
-        if (Object.prototype.hasOwnProperty.call(counts, category)) {
-          counts[category] += 1;
-        }
-        if (categories[category]) {
-          categories[category].push(machine);
-        }
+      if (Object.prototype.hasOwnProperty.call(counts, category)) {
+        counts[category] += 1;
       }
 
-      document.getElementById("kpi-running").textContent = counts.running;
-      document.getElementById("kpi-stop").textContent = counts.stop;
-      document.getElementById("kpi-startup").textContent = counts.startup;
-      document.getElementById("kpi-no-job").textContent = counts["no-job"];
-      document.getElementById("kpi-disconnected").textContent = counts.disconnected;
-
-      renderTable("stopRows", categories.stop, 4, machine => `
-        <tr>
-          <td>${escapeHtml(machine.name)}</td>
-          <td>${escapeHtml(machine.mold || "-")}</td>
-          <td>${escapeHtml(machine.state)}</td>
-          <td>${escapeHtml(machine.cycle || "-")}</td>
-        </tr>
-      `);
-
-      renderTable("startupRows", categories.startup, 4, machine => `
-        <tr>
-          <td>${escapeHtml(machine.name)}</td>
-          <td>${escapeHtml(machine.mold || "-")}</td>
-          <td>Startup</td>
-          <td>${escapeHtml(machine.cycle || "-")}</td>
-        </tr>
-      `);
-
-      renderTable("disconnectedRows", categories.disconnected, 6, machine => `
-        <tr>
-          <td>${escapeHtml(machine.name)}</td>
-          <td>${escapeHtml(machine.mold || "-")}</td>
-          <td>${escapeHtml(machine.ip || "-")}</td>
-          <td>—</td>
-          <td>${shift}</td>
-          <td>Review by Process Engineering</td>
-        </tr>
-      `);
-
-      renderTable("alertRows", data.alerts, 4, alert => `
-        <tr>
-          <td>${escapeHtml(alert.type)}</td>
-          <td>${escapeHtml(alert.value)}</td>
-          <td>${escapeHtml(alert.records)}</td>
-          <td>${escapeHtml(alert.description)}</td>
-        </tr>
-      `);
-
-      document.getElementById("alertFooter").hidden = data.alerts.length === 0;
-      document.getElementById("lastUpdated").textContent =
-        "Last Updated: Preview data (illustrative records)";
+      if (categories[category]) {
+        categories[category].push(machine);
+      }
     }
 
-    renderDashboard(demoData);
-  </script>
-</body>
-</html>
+    document.getElementById("kpi-running").textContent = counts.running;
+    document.getElementById("kpi-stop").textContent = counts.stop;
+    document.getElementById("kpi-startup").textContent = counts.startup;
+    document.getElementById("kpi-no-job").textContent = counts["no-job"];
+    document.getElementById("kpi-disconnected").textContent =
+      counts.disconnected;
+
+    renderTable("stopRows", categories.stop, 4, machine => `
+      <tr>
+        <td>${escapeHtml(machine.name)}</td>
+        <td>${escapeHtml(machine.mold || "-")}</td>
+        <td>${escapeHtml(machine.state)}</td>
+        <td>${escapeHtml(machine.cycle || "-")}</td>
+      </tr>
+    `);
+
+    renderTable("startupRows", categories.startup, 4, machine => `
+      <tr>
+        <td>${escapeHtml(machine.name)}</td>
+        <td>${escapeHtml(machine.mold || "-")}</td>
+        <td>Startup</td>
+        <td>${escapeHtml(machine.cycle || "-")}</td>
+      </tr>
+    `);
+
+    renderTable("disconnectedRows", categories.disconnected, 6, machine => `
+      <tr>
+        <td>${escapeHtml(machine.name)}</td>
+        <td>${escapeHtml(machine.mold || "-")}</td>
+        <td>${escapeHtml(machine.ip || "-")}</td>
+        <td>—</td>
+        <td>${currentShift()}</td>
+        <td>Review by Process Engineering</td>
+      </tr>
+    `);
+
+    renderTable("alertRows", alerts, 4, alert => `
+      <tr>
+        <td>${escapeHtml(alert.type)}</td>
+        <td>${escapeHtml(alert.value)}</td>
+        <td>${escapeHtml(alert.records)}</td>
+        <td>${escapeHtml(alert.description)}</td>
+      </tr>
+    `);
+
+    document.getElementById("alertFooter").hidden = alerts.length === 0;
+
+    const previewNotice = document.querySelector(".preview-notice");
+    previewNotice.textContent =
+      "Test data loaded from data.json. These are illustrative records, not live eDart data.";
+
+    const updatedAt = data.updated_at
+      ? new Date(data.updated_at)
+      : new Date();
+
+    document.getElementById("lastUpdated").textContent =
+      `Last Updated: ${Number.isNaN(updatedAt.getTime())
+        ? "Timestamp unavailable"
+        : updatedAt.toLocaleString()}`;
+  }
+
+  async function loadDashboardData() {
+    const lastUpdated = document.getElementById("lastUpdated");
+
+    try {
+      lastUpdated.textContent = "Last Updated: Loading data...";
+
+      const response = await fetch(
+        `${DATA_URL}?cache=${Date.now()}`,
+        { cache: "no-store" }
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      renderDashboard(data);
+    } catch (error) {
+      lastUpdated.textContent = "Last Updated: Data unavailable";
+      document.querySelector(".preview-notice").textContent =
+        "Could not load data.json. Check the GitHub Pages deployment.";
+      console.error("Dashboard data load failed:", error);
+    }
+  }
+
+  updateDateAndShift();
+  loadDashboardData();
+
+  setInterval(() => {
+    updateDateAndShift();
+    loadDashboardData();
+  }, REFRESH_MS);
+</script>
