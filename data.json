@@ -1,0 +1,41 @@
+{
+  "updated_at": "2026-10-11T08:18:02-06:00",
+  "machines": [
+    {
+      "name": "TEST 01",
+      "mold": "DEMO-MOLD",
+      "state": "Running",
+      "ip": "192.0.2.10",
+      "cycle": "32.10"
+    },
+    {
+      "name": "TEST 02",
+      "mold": "DEMO-MOLD",
+      "state": "Startup",
+      "ip": "192.0.2.11",
+      "cycle": "0.00"
+    },
+    {
+      "name": "TEST 03",
+      "mold": "-",
+      "state": "Disconnected",
+      "ip": "192.0.2.12",
+      "cycle": "-"
+    },
+    {
+      "name": "TEST 04",
+      "mold": "-",
+      "state": "",
+      "ip": "192.0.2.13",
+      "cycle": "-"
+    },
+    {
+      "name": "TEST 05",
+      "mold": "DEMO-MOLD",
+      "state": "10/11/26 08:00:00",
+      "ip": "192.0.2.14",
+      "cycle": "45.20"
+    }
+  ],
+  "alerts": []
+}
