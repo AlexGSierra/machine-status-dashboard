@@ -463,8 +463,13 @@
   <footer>EVA | ConMet de México</footer>
 <script>
   const DATA_URL =
-  "https://gist.githubusercontent.com/AlexGSierra/e254cafead9dedb073c376cab741f8a1/raw/data.json";
+    "https://gist.githubusercontent.com/AlexGSierra/e254cafead9dedb073c376cab741f8a1/raw/data.json";
+
   const REFRESH_MS = 60_000;
+  const FRESHNESS_LIMIT_MS = 120_000;
+
+  let lastDataTimestamp = null;
+  let lastFetchFailed = false;
 
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, character => ({
@@ -486,8 +491,8 @@
 
     const hasDate = /\d{1,4}[-/]\d{1,2}[-/]\d{1,4}/.test(value);
     const hasTime = /\d{1,2}:\d{2}/.test(value);
-    if (hasDate && hasTime) return "stop";
 
+    if (hasDate && hasTime) return "stop";
     return "other";
   }
 
@@ -498,29 +503,101 @@
 
   function updateDateAndShift() {
     const now = new Date();
-    const formattedDate = new Intl.DateTimeFormat("en-GB", {
+    const date = new Intl.DateTimeFormat("en-GB", {
       day: "2-digit",
       month: "short",
       year: "numeric"
     }).format(now);
 
     document.getElementById("dateShift").textContent =
-      `Date: ${formattedDate} | Shift: ${currentShift()}`;
+      `Date: ${date} | Shift: ${currentShift()}`;
   }
 
-  function renderTable(targetId, rows, columnCount, formatter) {
+  function renderRows(targetId, rows, columnCount, formatter, message) {
     const body = document.getElementById(targetId);
 
     if (!rows.length) {
       body.innerHTML =
-        `<tr class="empty-row"><td colspan="${columnCount}">No records.</td></tr>`;
+        `<tr class="empty-row"><td colspan="${columnCount}">` +
+        `${escapeHtml(message)}</td></tr>`;
       return;
     }
 
     body.innerHTML = rows.map(formatter).join("");
   }
 
+  function showUnavailable(message) {
+    const unavailableValue = "—";
+
+    document.getElementById("kpi-running").textContent = unavailableValue;
+    document.getElementById("kpi-stop").textContent = unavailableValue;
+    document.getElementById("kpi-startup").textContent = unavailableValue;
+    document.getElementById("kpi-no-job").textContent = unavailableValue;
+    document.getElementById("kpi-disconnected").textContent = unavailableValue;
+
+    renderRows("stopRows", [], 4, null, message);
+    renderRows("disconnectedRows", [], 6, null, message);
+    renderRows("startupRows", [], 4, null, message);
+    renderRows("alertRows", [], 4, null, message);
+
+    document.getElementById("alertFooter").hidden = true;
+    document.getElementById("lastUpdated").textContent =
+      "Last Updated: Status unavailable";
+    document.querySelector(".preview-notice").textContent = message;
+  }
+
+  function updateFreshnessStatus() {
+    if (!lastDataTimestamp) {
+      showUnavailable("Status unavailable — waiting for a valid data update.");
+      return;
+    }
+
+    const ageMs = Date.now() - lastDataTimestamp.getTime();
+
+    if (!Number.isFinite(ageMs) || ageMs > FRESHNESS_LIMIT_MS) {
+      showUnavailable(
+        "Status unavailable — data is not current. Waiting for a new eDart update."
+      );
+      return;
+    }
+
+    const formattedUpdate = lastDataTimestamp.toLocaleString();
+
+    if (lastFetchFailed) {
+      document.getElementById("lastUpdated").textContent =
+        `Last Updated: ${formattedUpdate} | Refresh attempt failed`;
+      document.querySelector(".preview-notice").textContent =
+        "The last published reading is still within the 2-minute freshness limit; retrying the update.";
+    } else {
+      document.getElementById("lastUpdated").textContent =
+        `Last Updated: ${formattedUpdate}`;
+      document.querySelector(".preview-notice").textContent =
+        "Live eDart data feed. The publisher should update this view every 60 seconds.";
+    }
+  }
+
   function renderDashboard(data) {
+    const parsedTimestamp = Date.parse(data.updated_at || "");
+
+    if (!Number.isFinite(parsedTimestamp)) {
+      lastDataTimestamp = null;
+      showUnavailable(
+        "Status unavailable — the published data has no valid update time."
+      );
+      return;
+    }
+
+    lastDataTimestamp = new Date(parsedTimestamp);
+
+    const ageMs = Date.now() - lastDataTimestamp.getTime();
+
+    if (ageMs < -60_000 || ageMs > FRESHNESS_LIMIT_MS) {
+      showUnavailable(
+        "Status unavailable — data is not current. Waiting for a new eDart update."
+      );
+      return;
+    }
+
     const machines = Array.isArray(data.machines) ? data.machines : [];
     const alerts = Array.isArray(data.alerts) ? data.alerts : [];
 
@@ -557,25 +634,25 @@
     document.getElementById("kpi-disconnected").textContent =
       counts.disconnected;
 
-    renderTable("stopRows", categories.stop, 4, machine => `
+    renderRows("stopRows", categories.stop, 4, machine => `
       <tr>
         <td>${escapeHtml(machine.name)}</td>
         <td>${escapeHtml(machine.mold || "-")}</td>
         <td>${escapeHtml(machine.state)}</td>
         <td>${escapeHtml(machine.cycle || "-")}</td>
       </tr>
-    `);
+    `, "No machines in this category.");
 
-    renderTable("startupRows", categories.startup, 4, machine => `
+    renderRows("startupRows", categories.startup, 4, machine => `
       <tr>
         <td>${escapeHtml(machine.name)}</td>
         <td>${escapeHtml(machine.mold || "-")}</td>
         <td>Startup</td>
         <td>${escapeHtml(machine.cycle || "-")}</td>
       </tr>
-    `);
+    `, "No machines in this category.");
 
-    renderTable("disconnectedRows", categories.disconnected, 6, machine => `
+    renderRows("disconnectedRows", categories.disconnected, 6, machine => `
       <tr>
         <td>${escapeHtml(machine.name)}</td>
         <td>${escapeHtml(machine.mold || "-")}</td>
@@ -584,39 +661,23 @@
         <td>${currentShift()}</td>
         <td>Review by Process Engineering</td>
       </tr>
-    `);
+    `, "No machines in this category.");
 
-    renderTable("alertRows", alerts, 4, alert => `
+    renderRows("alertRows", alerts, 4, alert => `
       <tr>
         <td>${escapeHtml(alert.type)}</td>
         <td>${escapeHtml(alert.value)}</td>
         <td>${escapeHtml(alert.records)}</td>
         <td>${escapeHtml(alert.description)}</td>
       </tr>
-    `);
+    `, "No alerts.");
 
     document.getElementById("alertFooter").hidden = alerts.length === 0;
-
-    const previewNotice = document.querySelector(".preview-notice");
-    previewNotice.textContent =
-      "Test data loaded from data.json. These are illustrative records, not live eDart data.";
-
-    const updatedAt = data.updated_at
-      ? new Date(data.updated_at)
-      : new Date();
-
-    document.getElementById("lastUpdated").textContent =
-      `Last Updated: ${Number.isNaN(updatedAt.getTime())
-        ? "Timestamp unavailable"
-        : updatedAt.toLocaleString()}`;
+    updateFreshnessStatus();
   }
 
   async function loadDashboardData() {
-    const lastUpdated = document.getElementById("lastUpdated");
-
     try {
-      lastUpdated.textContent = "Last Updated: Loading data...";
-
       const response = await fetch(
         `${DATA_URL}?cache=${Date.now()}`,
         { cache: "no-store" }
@@ -627,11 +688,11 @@
       }
 
       const data = await response.json();
+      lastFetchFailed = false;
       renderDashboard(data);
     } catch (error) {
-      lastUpdated.textContent = "Last Updated: Data unavailable";
-      document.querySelector(".preview-notice").textContent =
-        "Could not load data.json. Check the GitHub Pages deployment.";
+      lastFetchFailed = true;
+      updateFreshnessStatus();
       console.error("Dashboard data load failed:", error);
     }
   }
@@ -639,10 +700,14 @@
   updateDateAndShift();
   loadDashboardData();
 
+  // Obtener una publicación nueva cada 60 segundos.
   setInterval(() => {
     updateDateAndShift();
     loadDashboardData();
   }, REFRESH_MS);
+
+  // Comprobar la antigüedad periódicamente para retirar datos vencidos.
+  setInterval(updateFreshnessStatus, 10_000);
 </script>
   
 </body>
